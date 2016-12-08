@@ -54,6 +54,46 @@ static const unsigned int ebcdic2ascii[256] = {
   0x37, 0x38, 0x39, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff 
   };
 
+static unsigned int getEncodingForEscapeSeq(const char char_lit) {
+    unsigned int encoding = 0;
+    switch(char_lit) {
+       case 'a': 
+         encoding = 0x7;
+         break;
+       case 'b':
+         encoding = 0x8;
+         break;
+       case 't':
+         encoding = 0x9;
+         break;
+       case 'n': 
+         encoding = 0xA;
+         break;
+       case 'v': 
+         encoding = 0xB;
+         break;
+       case 'f':
+         encoding = 0xC;
+         break;
+       case 'r':
+         encoding = 0xD;
+         break;
+       case '\'': 
+         encoding = 0x27;
+         break;
+       case '\"': 
+         encoding = 0x22;
+         break;
+       case '\?':
+         encoding = 0x3f;
+         break;
+       default:
+         encoding = 0xff;
+         break;
+    }
+    return encoding;
+}
+
 class ConvertStringsInMacros: public clang::PPCallbacks {
 public:
    explicit ConvertStringsInMacros(SourceManager * SM) 
@@ -65,7 +105,7 @@ public:
       if (SM->isInMainFile(Loc)) {
         unsigned num_tok = info->getNumTokens();
         ArrayRef<Token> tokens = info->tokens();
-
+       
         //Find a stringification and/or literal tokens 
         for (unsigned x = 0 ; x < num_tok ; x++) {
             Token CurTok = tokens[x];
@@ -73,26 +113,33 @@ public:
                 rewriter.InsertTextBefore(CurTok.getLocation(),"USTR(");
                 traceMsg("Stringification at:", CurTok);
                 rewriter.InsertTextAfterToken(tokens[x+1].getLocation(),")");
-                }
-
+             }
+        
             if (CurTok.is(tok::string_literal)) {
                 rewriter.InsertTextBefore(CurTok.getLocation(),"u8");
                 traceMsg("String Literal at:", CurTok);
-                }
-
+             }
+        
             if (CurTok.is(tok::char_constant)) {
                 std::stringstream intToString;
                 const char * character_lit = CurTok.getLiteralData();
                 unsigned int lit_idx = 1;
-                //skip escape backslash in escape_seq 
+                //handle escape sequences 
                 if (character_lit[lit_idx] == '\\') {
                    lit_idx++;
-                   } 
-                intToString << "\'\\x" << std::hex << ebcdic2ascii[(unsigned int)character_lit[lit_idx]]<<"\'";
-                rewriter.ReplaceText(CurTok.getLocation(),3, intToString.str());
-                traceMsg("Char constant at:", CurTok);
+                   unsigned encoding = getEncodingForEscapeSeq(character_lit[lit_idx]);
+                   if (encoding != 0xff) {
+                      intToString << "\'\\x" << std::hex << encoding <<"\'";   
+                      rewriter.ReplaceText(CurTok.getLocation(),3, intToString.str());
+                   }
                 }
-          }
+                else {
+                   intToString << "\'\\x" << std::hex << ebcdic2ascii[(unsigned int)character_lit[lit_idx]]<<"\'";
+                   rewriter.ReplaceText(CurTok.getLocation(),3, intToString.str());
+                }
+                traceMsg("Char constant at:", CurTok);
+            }
+        }
         Loc.print(outs(), *SM);
         outs() << "Num Tokens:";
         outs() << num_tok << "\n";
@@ -105,8 +152,7 @@ private:
          outs() << msg;
          Loc.print(outs(), *SM);
          outs() << "\n";
-      }
-
+   }
 
 };
 
@@ -118,20 +164,20 @@ public:
        : astContext(&(CI->getASTContext())) {
         rewriter.setSourceMgr(astContext->getSourceManager(),
         astContext->getLangOpts());
-    }
+   }
     
-    virtual bool VisitCharacterLiteral(CharacterLiteral *lit) {
+   virtual bool VisitCharacterLiteral(CharacterLiteral *lit) {
       std::stringstream asciiEncoding;
       unsigned ascii_val = ebcdic2ascii[lit->getValue()];
       asciiEncoding << "\'\\x" << std::hex << ascii_val << "\'";
       rewriter.ReplaceText(SourceRange(lit->getLocStart(), lit->getLocEnd()), asciiEncoding.str());  
       return true;
-    }
+   }
     
-    virtual bool VisitStringLiteral(StringLiteral * lit) {
+   virtual bool VisitStringLiteral(StringLiteral * lit) {
      rewriter.InsertTextBefore(lit->getLocStart(),"u8");
      return true;
-    }
+   }
 };
 
 class StringLiteralConsumer : public ASTConsumer {
@@ -143,7 +189,7 @@ public:
   
   virtual void HandleTranslationUnit(ASTContext &context) override {
      visitor->TraverseDecl(context.getTranslationUnitDecl());
-    }
+  }
 };
 
 class ConvertLiteralsAction: public ASTFrontendAction {
@@ -151,7 +197,7 @@ public:
     std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI, StringRef file) {
         CI.getPreprocessor().addPPCallbacks(llvm::make_unique<ConvertStringsInMacros>(&CI.getSourceManager()));
         return llvm::make_unique<StringLiteralConsumer>(&CI);
-   }
+    }
 };
 
 
